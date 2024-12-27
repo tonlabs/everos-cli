@@ -13,6 +13,7 @@
 
 use crate::config::Config;
 use crate::helpers::{create_client_verbose, now, now_ms, query_with_limit, TonClient};
+use crate::SignatureIDType;
 use ever_abi::{Contract, Token, TokenValue, Uint};
 use ever_block::{
     ed25519_create_private_key, ed25519_sign_with_secret, BuilderData, Cell, IBitstring, SliceData,
@@ -349,6 +350,7 @@ pub async fn gen_update_config_message(
     seqno: Option<&str>,
     config_master_file: &str,
     new_param_file: &str,
+    signature_id: Option<SignatureIDType>,
     is_json: bool,
 ) -> Result<(), String> {
     let config_master_address = std::fs::read(&*(config_master_file.to_string() + ".addr"))
@@ -370,6 +372,7 @@ pub async fn gen_update_config_message(
             key_number,
             config_account,
             &private_key_of_config_account,
+            signature_id,
         )?
     } else {
         let seqno = seqno
@@ -382,6 +385,7 @@ pub async fn gen_update_config_message(
             key_number,
             config_account,
             &private_key_of_config_account,
+            signature_id,
         )?
     };
 
@@ -457,6 +461,7 @@ fn prepare_message_new_config_param(
     key_number: u32,
     config_account: SliceData,
     private_key_of_config_account: &[u8],
+    signature_id: Option<SignatureIDType>,
 ) -> Result<Message, String> {
     let prefix = hex::decode(PREFIX_UPDATE_CONFIG_MESSAGE_DATA).unwrap();
     let since_the_epoch = now() + 100; // timestamp + 100 secs
@@ -468,12 +473,21 @@ fn prepare_message_new_config_param(
     cell.append_i32(key_number as i32).unwrap();
     cell.checked_append_reference(config_param.clone()).unwrap();
 
+    let hash = cell.finalize(MAX_SAFE_DEPTH)
+        .unwrap()
+        .repr_hash();
+
+    let data = if let Some(SignatureIDType::Value(signature_id)) = signature_id {
+        let mut data = signature_id.to_be_bytes().to_vec();
+        data.extend_from_slice(hash.as_slice());
+        data
+    } else {
+        hash.inner().to_vec()
+    };
+
     let msg_signature = ed25519_sign_with_secret(
         private_key_of_config_account,
-        cell.finalize(MAX_SAFE_DEPTH)
-            .unwrap()
-            .repr_hash()
-            .as_slice(),
+        &data,
     )
     .map_err(|e| format!("Failed to sign: {e}"))?;
 
@@ -501,6 +515,7 @@ fn prepare_message_new_config_param_solidity(
     key_number: u32,
     config_account: SliceData,
     private_key_of_config_account: &[u8],
+    signature_id: Option<SignatureIDType>,
 ) -> Result<Message, String> {
     let secret =
         ed25519_create_private_key(private_key_of_config_account).map_err(|err| err.to_string())?;
@@ -522,13 +537,29 @@ fn prepare_message_new_config_param_solidity(
     let function = contract
         .function("set_config_param")
         .map_err(|err| err.to_string())?;
-    let body = function
-        .encode_input(
+    let (builder, hash) = function
+        .create_unsigned_call(
             &header,
             &parameters,
             false,
-            Some(&secret),
+            true,
             Some(config_contract_address.clone()),
+        )
+        .map_err(|err| format!("cannot create unsigned call {}", err))?;
+
+    let data_to_sign = if let Some(SignatureIDType::Value(signature_id)) = signature_id {
+        let mut data = signature_id.to_be_bytes().to_vec();
+        data.extend_from_slice(&hash);
+        data
+    } else {
+        hash
+    };
+    let signature = secret.sign(&data_to_sign);
+    let body = ever_abi::Function::fill_sign(
+            contract.version(),
+            Some(&signature),
+            Some(&secret.verifying_key()),
+            builder,
         )
         .and_then(SliceData::load_builder)
         .map_err(|err| format!("cannot prepare message body {}", err))?;

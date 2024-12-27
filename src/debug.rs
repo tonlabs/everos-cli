@@ -22,7 +22,8 @@ use crate::helpers::{
 };
 use crate::replay::{fetch, replay, CONFIG_ADDR, DUMP_ACCOUNT, DUMP_CONFIG, DUMP_NONE};
 use crate::{
-    contract_data_from_matches_or_config_alias, print_args, unpack_alternative_params, FullConfig,
+    contract_data_from_matches_or_config_alias, parse_signature_id, print_args,
+    unpack_alternative_params, FullConfig, SignatureIDType
 };
 use clap::{App, Arg, ArgMatches, SubCommand};
 use ever_assembler::DbgInfo;
@@ -140,7 +141,7 @@ pub fn init_debug_logger(trace_path: &str) -> Result<(), String> {
     log::set_boxed_logger(logger).map_err(|e| format!("Failed to set logger {trace_path}: {e}"))
 }
 
-pub fn create_debug_command<'a, 'b>() -> App<'a, 'b> {
+pub fn create_debug_command<'a, 'b>(signature_id_arg: &Arg<'a, 'b>) -> App<'a, 'b> {
     let output_arg = Arg::with_name("LOG_PATH")
         .help("Path where to store the trace. Default path is \"./trace.log\". Note: old file will be removed.")
         .takes_value(true)
@@ -252,6 +253,7 @@ pub fn create_debug_command<'a, 'b>() -> App<'a, 'b> {
         .arg(config_path_arg.clone())
         .arg(update_arg.clone().requires("BOC"))
         .arg(now_arg.clone())
+        .arg(signature_id_arg.clone())
         .arg(
             Arg::with_name("MESSAGE")
                 .takes_value(true)
@@ -821,10 +823,11 @@ async fn debug_message_command(matches: &ArgMatches<'_>, config: &Config) -> Res
     let input = matches.value_of("ADDRESS");
     let output = Some(matches.value_of("LOG_PATH").unwrap_or(DEFAULT_TRACE_PATH));
     let debug_info = matches.value_of("DBG_INFO").map(|s| s.to_string());
+    let signature_id = matches.value_of("SIGNATURE_ID");
     let is_boc = matches.is_present("BOC");
     let message = matches.value_of("MESSAGE");
     if !config.is_json {
-        print_args!(input, message, output, debug_info);
+        print_args!(input, message, output, debug_info, signature_id);
     }
 
     let ton_client = create_client(config)?;
@@ -1243,12 +1246,19 @@ pub async fn execute_debug(
         };
         Box::new(TickTockTransactionExecutor::new(bc_config, tt))
     };
+    let mut signature_id = 0;
+    if let Some(matches) = matches {
+        if let Some(SignatureIDType::Value(id)) = parse_signature_id(matches.value_of("SIGNATURE_ID"))? {
+            signature_id = id;
+        }
+    }
     let params = ExecuteParams {
         block_unixtime: (time_in_ms / 1000) as u32,
         block_lt,
         last_tr_lt: Arc::new(AtomicU64::new(last_tr_lt)),
         debug: true,
         trace_callback: Some(generate_callback(matches, ever_config)),
+        signature_id,
         ..ExecuteParams::default()
     };
 

@@ -344,6 +344,12 @@ async fn main_internal() -> Result<(), String> {
         .takes_value(true)
         .help("Path to the file where to store the message.");
 
+    let signature_id_arg = Arg::with_name("SIGNATURE_ID")
+        .long("--signature_id")
+        .takes_value(true)
+        .allow_hyphen_values(true)
+        .help("Include signature_id for message generation. Use `--signature_id online` to fetch signature_id value from the config endpoint.");
+
     let raw_arg = Arg::with_name("RAW")
         .long("--raw")
         .help("Creates raw message boc.");
@@ -351,10 +357,7 @@ async fn main_internal() -> Result<(), String> {
     let deploy_message_cmd = deploy_cmd.clone()
         .name("deploy_message")
         .about("Generates a signed message to deploy a smart contract to the blockchain.")
-        .arg(Arg::with_name("SIGNATURE_ID")
-            .long("--signature_id")
-            .takes_value(true)
-            .help("Include signature_id for message generation. Use `--signature_id online` to fetch signature_id value from the config endpoint."))
+        .arg(signature_id_arg.clone())
         .arg(output_arg.clone())
         .arg(raw_arg.clone());
 
@@ -411,10 +414,7 @@ async fn main_internal() -> Result<(), String> {
             .long("--time")
             .takes_value(true)
             .help("Message creation time in milliseconds. If not specified, `now` is used."))
-        .arg(Arg::with_name("SIGNATURE_ID")
-            .long("--signature_id")
-            .takes_value(true)
-            .help("Include signature_id for message generation. Use `--signature_id online` to fetch signature_id value from the config endpoint."))
+        .arg(signature_id_arg.clone())
         .arg(output_arg.clone())
         .arg(raw_arg.clone());
 
@@ -855,6 +855,7 @@ async fn main_internal() -> Result<(), String> {
                 .takes_value(true)
                 .help("path to config-master files"),
         )
+        .arg(signature_id_arg.clone())
         .arg(
             Arg::with_name("NEW_PARAM_FILE")
                 .takes_value(true)
@@ -1018,7 +1019,7 @@ async fn main_internal() -> Result<(), String> {
         .subcommand(create_depool_command())
         .subcommand(create_decode_command())
         .subcommand(create_debot_command())
-        .subcommand(create_debug_command())
+        .subcommand(create_debug_command(&signature_id_arg))
         .subcommand(create_test_command())
         .subcommand(getconfig_cmd)
         .subcommand(bcconfig_cmd)
@@ -1507,6 +1508,18 @@ async fn runget_command(matches: &ArgMatches<'_>, config: &Config) -> Result<(),
     .await
 }
 
+fn parse_signature_id(signature_id: Option<&str>) -> Result<Option<SignatureIDType>, String> {
+    signature_id.map(|val| {
+        if val == "online" {
+            return Ok::<SignatureIDType, String>(SignatureIDType::Online);
+        }
+        let sid = i32::from_str_radix(val, 10)
+            .map_err(|e| format!("Failed to parse SIGNATURE_ID: {e}"))?;
+        Ok(SignatureIDType::Value(sid))
+    })
+    .transpose()
+}
+
 async fn deploy_command(
     matches: &ArgMatches<'_>,
     full_config: &mut FullConfig,
@@ -1548,17 +1561,6 @@ async fn deploy_command(
             .await
         }
         DeployType::MsgOnly => {
-            let signature_id = matches
-                .value_of("SIGNATURE_ID")
-                .map(|val| {
-                    if val == "online" {
-                        return Ok::<SignatureIDType, String>(SignatureIDType::Online);
-                    }
-                    let sid = i32::from_str_radix(val, 10)
-                        .map_err(|e| format!("Failed to parse SIGNATURE_ID: {e}"))?;
-                    Ok(SignatureIDType::Value(sid))
-                })
-                .transpose()?;
             generate_deploy_message(
                 tvc.unwrap(),
                 &abi.unwrap(),
@@ -1568,7 +1570,7 @@ async fn deploy_command(
                 raw,
                 output,
                 config,
-                signature_id,
+                parse_signature_id(signature_id)?,
                 method.to_string(),
             )
             .await
@@ -1873,16 +1875,18 @@ async fn getconfig_command(matches: &ArgMatches<'_>, config: &Config) -> Result<
 async fn update_config_command(matches: &ArgMatches<'_>, config: &Config) -> Result<(), String> {
     let abi = matches.value_of("ABI");
     let seqno = matches.value_of("SEQNO");
+    let signature_id = matches.value_of("SIGNATURE_ID");
     let config_master = matches.value_of("CONFIG_MASTER_KEY_FILE");
     let new_param = matches.value_of("NEW_PARAM_FILE");
     if !config.is_json {
-        print_args!(seqno, config_master, new_param);
+        print_args!(seqno, config_master, new_param, signature_id);
     }
     gen_update_config_message(
         abi,
         seqno,
         config_master.unwrap(),
         new_param.unwrap(),
+        parse_signature_id(signature_id)?,
         config.is_json,
     )
     .await
